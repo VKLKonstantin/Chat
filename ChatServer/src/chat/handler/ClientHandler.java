@@ -91,6 +91,7 @@ public class ClientHandler {
            /* else if(message.startsWith(PRIVATE_MSG_PREFIX)){
 
             }*/
+
             else {
                 myServer.broadcastMessage(message, this, false);
             }
