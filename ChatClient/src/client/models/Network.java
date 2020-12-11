@@ -2,53 +2,59 @@ package client.models;
 
 import client.NetworkClient;
 import client.controllers.ChatController;
+import clientserver.Command;
+import clientserver.commands.*;
 import javafx.application.Platform;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.Socket;
 
 public class Network {
-    private static final String AUTH_CMD_PREFIX = "/auth";
-    private static final String AUTHOK_CMD_PREFIX = "/authok";
-    private static final String AUTHERR_CMD_PREFIX = "/autherr";
-    private static final String PRIVATE_MSG_PREFIX = "/w";
-    private static final String CLIENT_MSG_PREFIX = "/clientMsg";
-    private static final String SERVER_MSG_PREFIX = "/serverMsg";
-    private static final String END_CMD = "/end";
 
+    private static final String SERVER_ADRESS = "localhost";
     private static final int SERVER_PORT = 8189;
-    private static final String SERVER_HOST = "localhost";
-
-    private final int port;
 
     private final String host;
-    private DataInputStream in;
-    private DataOutputStream out;
+    private final int port;
+
+    private ObjectOutputStream dataOutputStream;
+    private ObjectInputStream dataInputStream;
+
     private Socket socket;
+
     private String username;
-    public Network() {
-        this(SERVER_HOST, SERVER_PORT);
+
+    public ObjectOutputStream getDataOutputStream() {
+        return dataOutputStream;
     }
 
-    public Network(String serverHost, int serverPort) {
-        this.host = serverHost;
-        this.port = serverPort;
+    public ObjectInputStream getDataInputStream() {
+        return dataInputStream;
+    }
+
+    public Network() {
+        this(SERVER_ADRESS, SERVER_PORT);
+    }
+
+    public Network(String host, int port) {
+        this.host = host;
+        this.port = port;
     }
 
     public boolean connect() {
         try {
             socket = new Socket(host, port);
-            in = new DataInputStream(socket.getInputStream());
-            out = new DataOutputStream(socket.getOutputStream());
+            dataOutputStream = new ObjectOutputStream(socket.getOutputStream());
+            dataInputStream = new ObjectInputStream(socket.getInputStream());
             return true;
+
         } catch (IOException e) {
-            System.out.println("Соединение не было установлено");
+            System.out.println("Соединение не было установлено!");
             e.printStackTrace();
             return false;
         }
-
 
     }
 
@@ -56,68 +62,93 @@ public class Network {
         try {
             socket.close();
         } catch (IOException e) {
-
-
+            e.printStackTrace();
         }
     }
 
-    public DataInputStream getIn() {
-        return in;
-    }
-
-    public DataOutputStream getOut() {
-        return out;
-    }
-
     public void waitMessage(ChatController chatController) {
-        Thread thread = new Thread(() -> {
+
+        Thread thread = new Thread( () -> {
             try {
                 while (true) {
-                    String message = in.readUTF();
 
-                    if(message.startsWith(CLIENT_MSG_PREFIX)) {
-                        String[] parts = message.split("\\s+", 3);
-                        String sender = parts[1];
-                        String msgBody = parts[2];
-
-                        Platform.runLater(() -> chatController.appendMessage(String.format("%s: %s", sender, msgBody)));
-                    }
-                    else if(message.startsWith(SERVER_MSG_PREFIX)) {
-                        String[] parts = message.split("\\s+", 2);
-                        Platform.runLater(() -> chatController.appendMessage(parts[1]));
-                    }
-                    else {
-                        Platform.runLater(() -> NetworkClient.showErrorMessage("Неизвестная команда", message, ""));
-                    }
+                    Command command = readCommand();
+                    if(command == null) {
+                        NetworkClient.showErrorMessage("Error","Ошибка серверва", "Получена неверная команда");
+                        continue;
                     }
 
+                    switch (command.getType()) {
+                        case INFO_MESSAGE: {
+                            MessageInfoCommandData data = (MessageInfoCommandData) command.getData();
+                            String message = data.getMessage();
+                            String sender = data.getSender();
+                            String formattedMessage = sender != null ? String.format("%s: %s", sender, message) : message;
+                            Platform.runLater(() -> {
+                                chatController.appendMessage(formattedMessage);
+                            });
+                            break;
+                        }
+                        case ERROR: {
+                            ErrorCommandData data = (ErrorCommandData) command.getData();
+                            String errorMessage = data.getErrorMessage();
+                            Platform.runLater(() -> {
+                                NetworkClient.showErrorMessage("Error", "Server error", errorMessage);
+                            });
+                            break;
+                        }
+                        case UPDATE_USERS_LIST: {
+                            UpdateUsersListCommandData data = (UpdateUsersListCommandData) command.getData();
+                            Platform.runLater(() -> chatController.updateUsers(data.getUsers()));
+                            break;
+                        }
+                        default:
+                            Platform.runLater(() -> {
+                                NetworkClient.showErrorMessage("Error","Unknown command from server!", command.getType().toString());
+                            });
+                    }
 
-
-            }
-            catch (IOException e) {
+                }
+            } catch (IOException e) {
                 e.printStackTrace();
-                NetworkClient.showErrorMessage("Ошибка подключения", "", e.getMessage());
+                System.out.println("Соединение потеряно!");
             }
         });
         thread.setDaemon(true);
         thread.start();
     }
 
+
     public String sendAuthCommand(String login, String password) {
         try {
+            Command authCommand = Command.authCommand(login, password);
+            dataOutputStream.writeObject(authCommand);
 
-            sendMessage(String.format("%s %s %s", AUTH_CMD_PREFIX, login, password));
-
-            String response = in.readUTF();
-            if (response.startsWith(AUTHOK_CMD_PREFIX)) {
-                this.username = response.split("\\s+", 2)[1];
-                return null;
+            Command command = readCommand();
+            if (command == null) {
+                return "Ошибка чтения команды с сервера";
             }
-            return response.split("\\s+", 2)[1];
+
+            switch (command.getType()) {
+                case AUTH_OK: {
+                    AuthOkCommandData data = (AuthOkCommandData) command.getData();
+                    this.username = data.getUsername();
+                    return null;
+                }
+
+                case AUTH_ERROR:
+                case ERROR: {
+                    AuthErrorCommandData data = (AuthErrorCommandData) command.getData();
+                    return data.getErrorMessage();
+                }
+                default:
+                    return "Unknown type of command: " + command.getType();
+
+            }
         } catch (IOException e) {
             e.printStackTrace();
+            return e.getMessage();
         }
-        return null;
     }
 
     public String getUsername() {
@@ -125,6 +156,29 @@ public class Network {
     }
 
     public void sendMessage(String message) throws IOException {
-        out.writeUTF(message);
+        sendMessage(Command.publicMessageCommand(username, message));
+    }
+
+    public void sendMessage(Command command) throws IOException {
+        dataOutputStream.writeObject(command);
+    }
+
+
+
+    public void sendPrivateMessage(String message, String recipient) throws IOException {
+        Command command = Command.privateMessageCommand(recipient, message);
+        sendMessage(command);
+    }
+
+    private Command readCommand() throws IOException {
+        try {
+            return (Command) dataInputStream.readObject();
+        } catch (ClassNotFoundException e) {
+            String errorMessage = "Получен неизвестный объект";
+            System.err.println(errorMessage);
+            e.printStackTrace();
+            sendMessage(Command.errorCommand(errorMessage));
+            return null;
+        }
     }
 }
