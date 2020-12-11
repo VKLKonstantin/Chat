@@ -13,12 +13,10 @@ import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.io.IOException;
-import java.util.List;
 
 
 public class NetworkClient extends Application {
 
-    public static final List<String> USERS_TEST_DATA = List.of("Константин", "Иван", "Алекс");
     private Stage primaryStage;
     private Stage authStage;
     private Network network;

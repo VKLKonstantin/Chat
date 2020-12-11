@@ -11,7 +11,7 @@
             <Font size="24.0" />
          </font>
       </TextField>
-      <PasswordField fx:id="passwordField" layoutX="161.0" layoutY="159.0">
+      <PasswordField fx:id="passwordField" layoutX="161.0" layoutY="159.0" onAction="#checkAuth">
          <font>
             <Font size="24.0" />
          </font>
